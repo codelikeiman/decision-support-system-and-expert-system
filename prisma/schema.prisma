@@ -1,0 +1,536 @@
+// Skema basis data Platform SPK / Sistem Pakar Multi-Tenant.
+//
+// Aturan tenancy: SETIAP tabel data domain memiliki kolom `client_id` (dan
+// `case_id` bila relevan). Seluruh akses dari sisi Admin/End-User melewati
+// `tenantDb(clientId)` (lihat lib/tenant.ts) yang memaksa filter `client_id`.
+
+generator client {
+  provider      = "prisma-client-js"
+  // "native" untuk komputer lokal; rhel-openssl-3.0.x untuk runtime Vercel (Amazon Linux 2023)
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+// Supabase (PostgreSQL).
+//  - DATABASE_URL : pooler transaction mode (port 6543) + ?pgbouncer=true&connection_limit=1
+//                   → dipakai aplikasi di Vercel (serverless).
+//  - DIRECT_URL   : koneksi langsung / pooler session mode (port 5432)
+//                   → dipakai `prisma migrate`.
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  super_admin
+  admin
+  end_user
+}
+
+enum Category {
+  A
+  B
+  C
+  D
+}
+
+/// Cara jawaban end-user dipakai pada metode Kategori A (lihat README).
+enum McdmMode {
+  profil
+  preferensi
+}
+
+enum CriteriaType {
+  benefit
+  cost
+}
+
+enum FuzzyVariableType {
+  input
+  output
+}
+
+enum MembershipFunction {
+  linear_naik
+  linear_turun
+  segitiga
+  trapesium
+}
+
+enum LogicOperator {
+  AND
+  OR
+}
+
+enum ValidationStatus {
+  match
+  mismatch
+}
+
+// ---------------------------------------------------------------------------
+// Tabel bersama (lintas kategori)
+// ---------------------------------------------------------------------------
+
+model Client {
+  id             Int      @id @default(autoincrement())
+  namaClient     String   @map("nama_client")
+  slug           String   @unique
+  deskripsi      String?  @db.Text
+  logoUrl        String?  @map("logo_url") @db.VarChar(500)
+  warnaPrimary   String   @default("#0f766e") @map("warna_primary") @db.VarChar(9)
+  warnaSecondary String   @default("#134e4a") @map("warna_secondary") @db.VarChar(9)
+  warnaAccent    String   @default("#f59e0b") @map("warna_accent") @db.VarChar(9)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  users                User[]
+  cases                SpkCase[]
+  alternatives         Alternative[]
+  criteria             CriteriaMcdm[]
+  criteriaScales       CriteriaScaleMcdm[]
+  alternativeValues    AlternativeValueMcdm[]
+  ahpPairwise          AhpPairwise[]
+  symptoms             Symptom[]
+  symptomWeights       AlternativeSymptomWeight[]
+  dependencies         ConditionalDependency[]
+  fuzzyVariables       FuzzyVariable[]
+  fuzzySets            FuzzySet[]
+  fuzzyRules           FuzzyRule[]
+  chainingRules        RuleChaining[]
+  ruleConditions       RuleCondition[]
+  consultations        Consultation[]
+  calculationSteps     CalculationStep[]
+  validationTests      ValidationTest[]
+  validationTestItems  ValidationTestItem[]
+
+  @@map("clients")
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  /// null hanya untuk super admin
+  clientId     Int?     @map("client_id")
+  role         Role
+  nama         String
+  email        String
+  passwordHash String   @map("password_hash")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  client        Client?        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  consultations Consultation[]
+
+  /// Email unik per client (end-user boleh memakai email yang sama di client berbeda).
+  /// Keunikan email antar-staf (super admin & admin) dijaga di lapisan aplikasi.
+  @@unique([clientId, email])
+  @@index([email])
+  @@map("users")
+}
+
+model SpkCase {
+  id            Int      @id @default(autoincrement())
+  clientId      Int      @map("client_id")
+  judul         String
+  slug          String
+  deskripsi     String?  @db.Text
+  /// teks instruksi untuk end-user
+  instruksi     String?  @db.Text
+  gambarUrl     String?  @map("gambar_url") @db.VarChar(500)
+  /// salah satu dari 15 kunci metode (lihat lib/engines/index.ts)
+  methodKey     String   @map("method_key") @db.VarChar(40)
+  category      Category
+  mcdmMode      McdmMode @default(profil) @map("mcdm_mode")
+  requiresLogin Boolean  @default(false) @map("requires_login")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  client          Client                  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  alternatives    Alternative[]
+  criteria        CriteriaMcdm[]
+  ahpPairwise     AhpPairwise[]
+  symptoms        Symptom[]
+  dependencies    ConditionalDependency[]
+  fuzzyVariables  FuzzyVariable[]
+  fuzzyRules      FuzzyRule[]
+  chainingRules   RuleChaining[]
+  consultations   Consultation[]
+  validationTests ValidationTest[]
+
+  @@unique([clientId, slug])
+  @@map("spk_cases")
+}
+
+/// Alternatif / hasil diagnosis — dipakai lintas kategori.
+model Alternative {
+  id             Int     @id @default(autoincrement())
+  clientId       Int     @map("client_id")
+  caseId         Int     @map("case_id")
+  namaAlternatif String  @map("nama_alternatif")
+  deskripsiHasil String? @map("deskripsi_hasil") @db.Text
+  saranTindakan  String? @map("saran_tindakan") @db.Text
+  /// probabilitas prior P(H) — hanya dipakai Naive Bayes & Bayesian Network; kosong = seragam
+  prior          Float?
+  urutan         Int     @default(0)
+
+  client            Client                     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case              SpkCase                    @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  values            AlternativeValueMcdm[]
+  symptomWeights    AlternativeSymptomWeight[]
+  fuzzyRules        FuzzyRule[]
+  chainingRules     RuleChaining[]
+  consultations     Consultation[]
+  expertDiagnoses   ValidationTestItem[]       @relation("DiagnosisPakar")
+  systemResults     ValidationTestItem[]       @relation("HasilSistem")
+
+  @@index([caseId, urutan])
+  @@map("alternatives")
+}
+
+model Consultation {
+  id                 Int      @id @default(autoincrement())
+  /// kode publik acak (dipakai pada URL hasil & laporan PDF)
+  kode               String   @unique @db.VarChar(24)
+  clientId           Int      @map("client_id")
+  caseId             Int      @map("case_id")
+  /// null bila konsultasi publik tanpa akun
+  userId             Int?     @map("user_id")
+  /// id sesi (cookie) untuk konsultasi publik tanpa akun
+  sessionId          String?  @map("session_id") @db.VarChar(64)
+  /// metode yang dipakai saat konsultasi (metode Case bisa diganti kemudian)
+  methodKey          String   @map("method_key") @db.VarChar(40)
+  namaResponden      String?  @map("nama_responden")
+  inputDataJson      Json     @map("input_data_json")
+  hasilJson          Json     @map("hasil_json")
+  hasilAlternativeId Int?     @map("hasil_alternative_id")
+  skor               Float?
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  client           Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case             SpkCase           @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  user             User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  hasilAlternative Alternative?      @relation(fields: [hasilAlternativeId], references: [id], onDelete: SetNull)
+  steps            CalculationStep[]
+
+  @@index([caseId, createdAt])
+  @@index([userId])
+  @@index([sessionId])
+  @@map("consultations")
+}
+
+/// Rincian langkah perhitungan tiap konsultasi (trust layer).
+model CalculationStep {
+  id             Int     @id @default(autoincrement())
+  clientId       Int     @map("client_id")
+  consultationId Int     @map("consultation_id")
+  langkahKe      Int     @map("langkah_ke")
+  judulLangkah   String  @map("judul_langkah")
+  /// { deskripsi?: string, blok: StepBlock[] }
+  detailJson     Json    @map("detail_json")
+  /// rumus LaTeX, satu rumus per baris
+  rumusText      String? @map("rumus_text") @db.Text
+
+  client       Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  consultation Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+
+  @@index([consultationId, langkahKe])
+  @@map("calculation_steps")
+}
+
+model ValidationTest {
+  id             Int       @id @default(autoincrement())
+  clientId       Int       @map("client_id")
+  caseId         Int       @map("case_id")
+  namaDatasetUji String    @map("nama_dataset_uji")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  lastRunAt      DateTime? @map("last_run_at")
+  /// metode yang aktif saat pengujian terakhir dijalankan
+  lastRunMethod  String?   @map("last_run_method") @db.VarChar(40)
+
+  client Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case   SpkCase              @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  items  ValidationTestItem[]
+
+  @@index([caseId])
+  @@map("validation_tests")
+}
+
+model ValidationTestItem {
+  id                          Int               @id @default(autoincrement())
+  clientId                    Int               @map("client_id")
+  validationTestId            Int               @map("validation_test_id")
+  label                       String?
+  inputDataJson               Json              @map("input_data_json")
+  diagnosisPakarAlternativeId Int               @map("diagnosis_pakar_alternative_id")
+  hasilSistemAlternativeId    Int?              @map("hasil_sistem_alternative_id")
+  skor                        Float?
+  /// null = belum pernah dijalankan
+  status                      ValidationStatus?
+  /// pesan bila engine gagal memproses item
+  catatan                     String?           @db.Text
+
+  client         Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  validationTest ValidationTest @relation(fields: [validationTestId], references: [id], onDelete: Cascade)
+  diagnosisPakar Alternative    @relation("DiagnosisPakar", fields: [diagnosisPakarAlternativeId], references: [id], onDelete: Cascade)
+  hasilSistem    Alternative?   @relation("HasilSistem", fields: [hasilSistemAlternativeId], references: [id], onDelete: SetNull)
+
+  @@index([validationTestId])
+  @@map("validation_test_items")
+}
+
+/// Penghitung percobaan (login, pendaftaran, konsultasi) — disimpan di database
+/// agar berlaku di semua instance serverless.
+model RateLimit {
+  key     String   @id @db.VarChar(200)
+  jumlah  Int      @default(0)
+  resetAt DateTime @map("reset_at")
+
+  @@index([resetAt])
+  @@map("rate_limits")
+}
+
+/// Pengaturan global sistem (hanya Super Admin).
+model SystemSetting {
+  key       String   @id @db.VarChar(64)
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+// ---------------------------------------------------------------------------
+// Kategori A — MCDM / Scoring
+// ---------------------------------------------------------------------------
+
+model CriteriaMcdm {
+  id           Int          @id @default(autoincrement())
+  clientId     Int          @map("client_id")
+  caseId       Int          @map("case_id")
+  namaKriteria String       @map("nama_kriteria")
+  /// pertanyaan yang ditampilkan ke end-user (opsional; default nama kriteria)
+  pertanyaan   String?      @db.Text
+  tipe         CriteriaType @default(benefit)
+  bobot        Float        @default(1)
+  urutan       Int          @default(0)
+
+  client    Client                 @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case      SpkCase                @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  scales    CriteriaScaleMcdm[]
+  values    AlternativeValueMcdm[]
+  pairwiseA AhpPairwise[]          @relation("PairwiseA")
+  pairwiseB AhpPairwise[]          @relation("PairwiseB")
+
+  @@index([caseId, urutan])
+  @@map("criteria_mcdm")
+}
+
+/// Skala penilaian per kriteria, mis. "Tidak Pernah" = 1.
+model CriteriaScaleMcdm {
+  id         Int    @id @default(autoincrement())
+  clientId   Int    @map("client_id")
+  criteriaId Int    @map("criteria_id")
+  label      String
+  nilai      Float
+  urutan     Int    @default(0)
+
+  client   Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  criteria CriteriaMcdm @relation(fields: [criteriaId], references: [id], onDelete: Cascade)
+
+  @@index([criteriaId, urutan])
+  @@map("criteria_scale_mcdm")
+}
+
+/// Matriks keputusan: nilai tiap alternatif pada tiap kriteria.
+model AlternativeValueMcdm {
+  id            Int   @id @default(autoincrement())
+  clientId      Int   @map("client_id")
+  alternativeId Int   @map("alternative_id")
+  criteriaId    Int   @map("criteria_id")
+  nilai         Float
+
+  client      Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  alternative Alternative  @relation(fields: [alternativeId], references: [id], onDelete: Cascade)
+  criteria    CriteriaMcdm @relation(fields: [criteriaId], references: [id], onDelete: Cascade)
+
+  @@unique([alternativeId, criteriaId])
+  @@map("alternative_values_mcdm")
+}
+
+/// Perbandingan berpasangan antar-kriteria (khusus AHP). Hanya segitiga atas
+/// yang disimpan; nilai kebalikannya diturunkan (a_ji = 1/a_ij).
+model AhpPairwise {
+  id                Int   @id @default(autoincrement())
+  clientId          Int   @map("client_id")
+  caseId            Int   @map("case_id")
+  criteriaIdA       Int   @map("criteria_id_a")
+  criteriaIdB       Int   @map("criteria_id_b")
+  nilaiPerbandingan Float @map("nilai_perbandingan")
+
+  client    Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case      SpkCase      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  criteriaA CriteriaMcdm @relation("PairwiseA", fields: [criteriaIdA], references: [id], onDelete: Cascade)
+  criteriaB CriteriaMcdm @relation("PairwiseB", fields: [criteriaIdB], references: [id], onDelete: Cascade)
+
+  @@unique([criteriaIdA, criteriaIdB])
+  @@index([caseId])
+  @@map("ahp_pairwise")
+}
+
+// ---------------------------------------------------------------------------
+// Kategori B — Probabilistik (gejala juga dipakai Kategori D)
+// ---------------------------------------------------------------------------
+
+model Symptom {
+  id         Int    @id @default(autoincrement())
+  clientId   Int    @map("client_id")
+  caseId     Int    @map("case_id")
+  namaGejala String @map("nama_gejala") @db.VarChar(500)
+  kodeGejala String @map("kode_gejala") @db.VarChar(20)
+  urutan     Int    @default(0)
+
+  client          Client                     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case            SpkCase                    @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  weights         AlternativeSymptomWeight[]
+  asChild         ConditionalDependency[]    @relation("DependencyChild")
+  asParent        ConditionalDependency[]    @relation("DependencyParent")
+  ruleConditions  RuleCondition[]
+
+  @@unique([caseId, kodeGejala])
+  @@index([caseId, urutan])
+  @@map("symptoms")
+}
+
+/// nilai_pakar bermakna sesuai metode: CF pakar (-1..1), densitas
+/// Dempster-Shafer (0..1), atau P(gejala|penyakit) untuk Naive Bayes/BN (0..1).
+model AlternativeSymptomWeight {
+  id            Int   @id @default(autoincrement())
+  clientId      Int   @map("client_id")
+  alternativeId Int   @map("alternative_id")
+  symptomId     Int   @map("symptom_id")
+  nilaiPakar    Float @map("nilai_pakar")
+
+  client      Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  alternative Alternative @relation(fields: [alternativeId], references: [id], onDelete: Cascade)
+  symptom     Symptom     @relation(fields: [symptomId], references: [id], onDelete: Cascade)
+
+  @@unique([alternativeId, symptomId])
+  @@map("alternative_symptom_weight")
+}
+
+/// Dependensi antar-gejala (khusus Bayesian Network).
+model ConditionalDependency {
+  id              Int   @id @default(autoincrement())
+  clientId        Int   @map("client_id")
+  caseId          Int   @map("case_id")
+  symptomIdChild  Int   @map("symptom_id_child")
+  symptomIdParent Int   @map("symptom_id_parent")
+  /// P(gejala anak muncul | gejala induk muncul)
+  probabilitas    Float
+
+  client Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case   SpkCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  child  Symptom @relation("DependencyChild", fields: [symptomIdChild], references: [id], onDelete: Cascade)
+  parent Symptom @relation("DependencyParent", fields: [symptomIdParent], references: [id], onDelete: Cascade)
+
+  @@unique([symptomIdChild, symptomIdParent])
+  @@index([caseId])
+  @@map("conditional_dependency")
+}
+
+// ---------------------------------------------------------------------------
+// Kategori C — Fuzzy
+// ---------------------------------------------------------------------------
+
+model FuzzyVariable {
+  id           Int               @id @default(autoincrement())
+  clientId     Int               @map("client_id")
+  caseId       Int               @map("case_id")
+  namaVariabel String            @map("nama_variabel")
+  tipe         FuzzyVariableType
+  satuan       String?           @db.VarChar(50)
+  /// batas semesta pembicaraan
+  nilaiMin     Float             @default(0) @map("nilai_min")
+  nilaiMax     Float             @default(100) @map("nilai_max")
+  urutan       Int               @default(0)
+
+  client Client     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case   SpkCase    @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  sets   FuzzySet[]
+
+  @@index([caseId, urutan])
+  @@map("fuzzy_variables")
+}
+
+model FuzzySet {
+  id                Int                @id @default(autoincrement())
+  clientId          Int                @map("client_id")
+  variableId        Int                @map("variable_id")
+  namaHimpunan      String             @map("nama_himpunan")
+  fungsiKeanggotaan MembershipFunction @map("fungsi_keanggotaan")
+  /// { a, b } linear; { a, b, c } segitiga; { a, b, c, d } trapesium
+  parameterJson     Json               @map("parameter_json")
+  urutan            Int                @default(0)
+
+  client   Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  variable FuzzyVariable @relation(fields: [variableId], references: [id], onDelete: Cascade)
+
+  @@index([variableId, urutan])
+  @@map("fuzzy_sets")
+}
+
+model FuzzyRule {
+  id            Int    @id @default(autoincrement())
+  clientId      Int    @map("client_id")
+  caseId        Int    @map("case_id")
+  alternativeId Int?   @map("alternative_id")
+  ruleText      String @map("rule_text") @db.Text
+  /// { operator: "AND" | "OR", kondisi: [{ variable_id, set_id }, ...] }
+  antesedenJson Json   @map("anteseden_json")
+  /// { variable_id (output), set_id }
+  konsekuenJson Json   @map("konsekuen_json")
+  urutan        Int    @default(0)
+
+  client      Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case        SpkCase      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  alternative Alternative? @relation(fields: [alternativeId], references: [id], onDelete: SetNull)
+
+  @@index([caseId, urutan])
+  @@map("fuzzy_rules")
+}
+
+// ---------------------------------------------------------------------------
+// Kategori D — Rule-based (Forward Chaining)
+// ---------------------------------------------------------------------------
+
+model RuleChaining {
+  id            Int    @id @default(autoincrement())
+  clientId      Int    @map("client_id")
+  caseId        Int    @map("case_id")
+  alternativeId Int    @map("alternative_id")
+  namaRule      String @map("nama_rule")
+  urutan        Int    @default(0)
+
+  client      Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  case        SpkCase         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  alternative Alternative     @relation(fields: [alternativeId], references: [id], onDelete: Cascade)
+  conditions  RuleCondition[]
+
+  @@index([caseId, urutan])
+  @@map("rules_chaining")
+}
+
+model RuleCondition {
+  id        Int           @id @default(autoincrement())
+  clientId  Int           @map("client_id")
+  ruleId    Int           @map("rule_id")
+  symptomId Int           @map("symptom_id")
+  /// penghubung dengan kondisi sebelumnya (diabaikan untuk kondisi pertama)
+  operator  LogicOperator @default(AND)
+  urutan    Int           @default(0)
+
+  client  Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  rule    RuleChaining @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  symptom Symptom      @relation(fields: [symptomId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId, urutan])
+  @@map("rule_conditions")
+}

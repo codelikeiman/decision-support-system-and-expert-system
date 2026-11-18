@@ -1,0 +1,22 @@
+# dependensi
+node_modules/
+
+# build Next.js
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# rahasia & konfigurasi lokal
+.env
+.env.local
+.env.*.local
+
+# berkas unggahan (logo, ilustrasi)
+storage/
+
+# lain-lain
+coverage/
+*.log
+.DS_Store
+*.zip
