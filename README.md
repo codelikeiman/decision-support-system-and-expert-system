@@ -40,7 +40,7 @@ Variabel lingkungan (lihat `.env.example`):
 
 | Variabel | Keterangan |
 |---|---|
-| `DATABASE_URL` | Supabase **transaction pooler** (port 6543) + `?pgbouncer=true&connection_limit=1` — dipakai aplikasi |
+| `DATABASE_URL` | Supabase **transaction pooler** (port 6543) + `?pgbouncer=true&connection_limit=5&pool_timeout=20` — dipakai aplikasi |
 | `DIRECT_URL` | Supabase **session pooler** (port 5432) — dipakai `prisma migrate` |
 | `SUPABASE_URL` | `https://PROJECT_REF.supabase.co` — untuk Supabase Storage |
 | `SUPABASE_SERVICE_ROLE_KEY` | Kunci *service role* / *secret key*. **Rahasia**, hanya di server |
@@ -362,7 +362,7 @@ Tag yang dihasilkan: `og:title`, `og:description`, `og:url`, `og:type`, `og:loca
    **Southeast Asia (Singapore)** agar dekat dengan fungsi Vercel. Simpan kata sandi database.
 2. Klik **Connect** di bagian atas proyek, lalu salin:
    - **Transaction pooler** (port 6543) → `DATABASE_URL`, tambahkan
-     `?pgbouncer=true&connection_limit=1` di akhir.
+     `?pgbouncer=true&connection_limit=5&pool_timeout=20` di akhir.
    - **Session pooler** (port 5432) → `DIRECT_URL`.
 3. **Project Settings → API Keys**: salin URL proyek (`SUPABASE_URL`) dan kunci *service role* /
    *secret key* (`SUPABASE_SERVICE_ROLE_KEY`).
@@ -386,7 +386,7 @@ Tag yang dihasilkan: `og:title`, `og:description`, `og:url`, `og:type`, `og:loca
 
    | Variabel | Nilai |
    |---|---|
-   | `DATABASE_URL` | transaction pooler + `?pgbouncer=true&connection_limit=1` |
+   | `DATABASE_URL` | transaction pooler + `?pgbouncer=true&connection_limit=5&pool_timeout=20` |
    | `DIRECT_URL` | session pooler |
    | `SUPABASE_URL` | URL proyek Supabase |
    | `SUPABASE_SERVICE_ROLE_KEY` | kunci service role (tandai *Sensitive*) |
@@ -426,4 +426,3 @@ Branch lain menghasilkan deployment *preview*.
 - Ganti semua kata sandi akun contoh sebelum aplikasi dapat diakses orang lain.
 - Hasil sistem adalah alat bantu keputusan. Tampilkan dan pertahankan teks catatan (diatur di
   Pengaturan global) pada halaman hasil.
-# decision-support-system-and-expert-system

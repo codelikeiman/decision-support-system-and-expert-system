@@ -11,7 +11,7 @@ generator client {
 }
 
 // Supabase (PostgreSQL).
-//  - DATABASE_URL : pooler transaction mode (port 6543) + ?pgbouncer=true&connection_limit=1
+//  - DATABASE_URL : pooler transaction mode (port 6543) + ?pgbouncer=true&connection_limit=5&pool_timeout=20
 //                   → dipakai aplikasi di Vercel (serverless).
 //  - DIRECT_URL   : koneksi langsung / pooler session mode (port 5432)
 //                   → dipakai `prisma migrate`.

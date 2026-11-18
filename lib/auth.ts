@@ -46,19 +46,25 @@ export const authOptions: NextAuthOptions = {
         }
 
         let user;
-        if (clientSlug) {
-          const client = await prisma.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
-          user = client
-            ? await prisma.user.findFirst({
-                where: { email, clientId: client.id, role: 'end_user' },
-                include: { client: { select: { slug: true } } },
-              })
-            : null;
-        } else {
-          user = await prisma.user.findFirst({
-            where: { email, role: { in: ['super_admin', 'admin'] } },
-            include: { client: { select: { slug: true } } },
-          });
+        try {
+          if (clientSlug) {
+            const client = await prisma.client.findUnique({ where: { slug: clientSlug }, select: { id: true } });
+            user = client
+              ? await prisma.user.findFirst({
+                  where: { email, clientId: client.id, role: 'end_user' },
+                  include: { client: { select: { slug: true } } },
+                })
+              : null;
+          } else {
+            user = await prisma.user.findFirst({
+              where: { email, role: { in: ['super_admin', 'admin'] } },
+              include: { client: { select: { slug: true } } },
+            });
+          }
+        } catch (e) {
+          // Jangan pernah meneruskan detail galat database ke browser.
+          console.error('[auth] gagal membaca akun', e);
+          throw new Error('Layanan sedang mengalami gangguan. Silakan coba lagi beberapa saat lagi.');
         }
 
         const cocok = await bcrypt.compare(password, user?.passwordHash ?? HASH_DUMMY);
